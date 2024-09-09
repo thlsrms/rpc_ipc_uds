@@ -1,0 +1,22 @@
+[package]
+name = "rpc_ipc"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "server"
+path = "src/server.rs"
+
+[[bin]]
+name = "client"
+path = "src/client.rs"
+
+[dependencies]
+tokio = { version = "1", features = [
+    "macros",
+    "rt-multi-thread",
+    "net",
+    "sync",
+    "fs",
+] }
+bincode = { version = "2.0.0-rc.3" }
