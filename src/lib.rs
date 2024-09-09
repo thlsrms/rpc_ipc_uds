@@ -44,4 +44,5 @@ pub trait Service {
     fn rpc_method1(&mut self, input: Input) -> Output;
     fn rpc_method2(&mut self, input: Input) -> Output;
     fn rpc_method3(&mut self, forward_id: u64, forward_only: bool) -> Result<Output, ()>;
+    fn rpc_method4(&mut self, input: Input, client: uuid::Uuid) -> Output;
 }

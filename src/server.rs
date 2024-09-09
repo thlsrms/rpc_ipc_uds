@@ -1,10 +1,18 @@
-use rpc_ipc::{Input, Output, RpcRequest, RpcResponse, Serializer, Service};
+use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::net::UnixListener;
-use tokio::sync::Mutex;
+
+use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use tokio::net::{UnixListener, UnixStream};
+use tokio::sync::mpsc::Sender;
+use tokio::sync::{mpsc, Mutex};
+
+use rpc_ipc::{Input, Output, RpcRequest, RpcResponse, Serializer, Service};
+use uuid::Uuid;
 
 #[derive(Clone)]
-struct TestServer;
+struct TestServer {
+    clients: Arc<Mutex<HashMap<Uuid, Sender<Vec<u8>>>>>,
+}
 
 impl Service for TestServer {
     fn rpc_method1(&mut self, _input: Input) -> Output {
@@ -27,6 +35,19 @@ impl Service for TestServer {
             data: vec![7, 8, 9],
         })
     }
+
+    fn rpc_method4(&mut self, input: Input, client: Uuid) -> Output {
+        let (message, _): (String, _) =
+            bincode::decode_from_slice(&input.data, bincode::config::standard()).unwrap();
+        println!("RPC method4 message received '{message}'");
+        Output {
+            data: bincode::encode_to_vec(
+                format!("client: {client} | msg: {message}"),
+                bincode::config::standard(),
+            )
+            .unwrap(),
+        }
+    }
 }
 
 #[tokio::main]
@@ -37,30 +58,67 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::fs::remove_file(socket_addr).await?;
     }
     let listener = UnixListener::bind(socket_addr)?;
-    let server = Arc::new(Mutex::new(TestServer));
+    let server = Arc::new(Mutex::new(TestServer {
+        clients: Arc::new(Mutex::new(HashMap::new())),
+    }));
 
     loop {
         let (socket, _) = listener.accept().await?;
         let server = server.clone();
 
-        tokio::spawn(async move {
-            let mut buffer = vec![0u8; 1024];
-            let n = socket.try_read(&mut buffer).unwrap();
-
-            if n == 0 {
-                return;
-            }
-
-            let (request, _) = RpcRequest::decode(&buffer[..n]).unwrap();
-            let response = handle_request(Arc::clone(&server), request).await;
-
-            let response_data = response.encode().unwrap();
-            socket.try_write(&response_data).unwrap();
-        });
+        tokio::spawn(handle_connection(socket, server.clone()));
     }
 }
 
-async fn handle_request(server: Arc<Mutex<TestServer>>, request: RpcRequest) -> RpcResponse {
+async fn handle_connection(socket: UnixStream, server: Arc<Mutex<TestServer>>) {
+    let (mut reader, mut writer) = socket.into_split();
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(100);
+    let id = Uuid::new_v4();
+    server.lock().await.clients.lock().await.insert(id, tx);
+
+    // Task to handle incoming client requests
+    let server_handle = server.clone();
+    let reader_task = tokio::spawn(async move {
+        let mut buffer = vec![0u8; 1024];
+        while let Ok(n) = reader.read(&mut buffer).await {
+            if n == 0 {
+                break;
+            }
+
+            let (request, _) = RpcRequest::decode(&buffer[..n]).unwrap();
+            let response = handle_request(server_handle.clone(), request, id).await;
+
+            // For single client response
+            // if tx.send(response.encode().unwrap()).await.is_err() {
+            //     break;
+            // }
+            for tx in server_handle.lock().await.clients.lock().await.values() {
+                let _ = tx.send(response.encode().unwrap()).await;
+            }
+        }
+    });
+
+    // Task to handle sending messages to the client
+    let writer_task = tokio::spawn(async move {
+        while let Some(message) = rx.recv().await {
+            if writer.write(&message).await.is_err() {
+                break;
+            }
+        }
+    });
+
+    // Wait for both tasks to complete
+    let _ = tokio::join!(reader_task, writer_task);
+
+    // Remove the client from the list when done
+    server.lock().await.clients.lock().await.remove(&id);
+}
+
+async fn handle_request(
+    server: Arc<Mutex<TestServer>>,
+    request: RpcRequest,
+    client: Uuid,
+) -> RpcResponse {
     let mut server = server.lock().await;
 
     match request.method.as_str() {
@@ -88,6 +146,13 @@ async fn handle_request(server: Arc<Mutex<TestServer>>, request: RpcRequest) -> 
                 error: Some("Failed".to_string()),
             },
         },
+        "rpc_method4" => {
+            let output = server.rpc_method4(request.input, client);
+            RpcResponse {
+                output: Some(output),
+                error: None,
+            }
+        }
         _ => RpcResponse {
             output: None,
             error: Some("Unknown method".to_string()),
