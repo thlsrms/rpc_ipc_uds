@@ -6,7 +6,7 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::mpsc::Sender;
 use tokio::sync::{mpsc, Mutex};
 
-use rpc_ipc::{Input, Output, RpcRequest, RpcResponse, Serializer, Service};
+use rpc_ipc::{decode_data, encode_data, Packet, PacketResponse, PacketService};
 use uuid::Uuid;
 
 #[derive(Clone)]
@@ -14,38 +14,14 @@ struct TestServer {
     clients: Arc<Mutex<HashMap<Uuid, Sender<Vec<u8>>>>>,
 }
 
-impl Service for TestServer {
-    fn rpc_method1(&mut self, _input: Input) -> Output {
-        println!("RPC method1 {_input:?}");
-        Output {
-            data: vec![1, 2, 3],
-        }
-    }
-
-    fn rpc_method2(&mut self, _input: Input) -> Output {
-        println!("RPC method2 {_input:?}");
-        Output {
-            data: vec![4, 5, 6],
-        }
-    }
-
-    fn rpc_method3(&mut self, _forward_id: u64, _forward_only: bool) -> Result<Output, ()> {
-        println!("RPC method3 {_forward_id:?}");
-        Ok(Output {
-            data: vec![7, 8, 9],
-        })
-    }
-
-    fn rpc_method4(&mut self, input: Input, client: Uuid) -> Output {
-        let (message, _): (String, _) =
-            bincode::decode_from_slice(&input.data, bincode::config::standard()).unwrap();
-        println!("RPC method4 message received '{message}'");
-        Output {
-            data: bincode::encode_to_vec(
-                format!("client: {client} | msg: {message}"),
-                bincode::config::standard(),
-            )
-            .unwrap(),
+impl PacketService for TestServer {
+    fn message(&self, id: u32, client: Option<String>, message: String) -> PacketResponse {
+        println!("RPC message received '{message}'");
+        let res = format!("client: {} | msg: {message}", client.unwrap());
+        PacketResponse {
+            id,
+            data: Some(Packet::Message(id, None, res)),
+            error: None,
         }
     }
 }
@@ -85,7 +61,7 @@ async fn handle_connection(socket: UnixStream, server: Arc<Mutex<TestServer>>) {
                 break;
             }
 
-            let (request, _) = RpcRequest::decode(&buffer[..n]).unwrap();
+            let (request, _) = decode_data(&buffer[..n]).unwrap();
             let response = handle_request(server_handle.clone(), request, id).await;
 
             // For single client response
@@ -93,7 +69,7 @@ async fn handle_connection(socket: UnixStream, server: Arc<Mutex<TestServer>>) {
             //     break;
             // }
             for tx in server_handle.lock().await.clients.lock().await.values() {
-                let _ = tx.send(response.encode().unwrap()).await;
+                let _ = tx.send(encode_data(&response).unwrap()).await;
             }
         }
     });
@@ -116,47 +92,12 @@ async fn handle_connection(socket: UnixStream, server: Arc<Mutex<TestServer>>) {
 
 async fn handle_request(
     server: Arc<Mutex<TestServer>>,
-    request: RpcRequest,
+    request: Packet,
     client: Uuid,
-) -> RpcResponse {
-    let mut server = server.lock().await;
+) -> PacketResponse {
+    let server = server.lock().await;
 
-    // TODO: Typed Service functions + Custom Input / Output
-    match request.method.as_str() {
-        "rpc_method1" => {
-            let output = server.rpc_method1(request.input);
-            RpcResponse {
-                output: Some(output),
-                error: None,
-            }
-        }
-        "rpc_method2" => {
-            let output = server.rpc_method2(request.input);
-            RpcResponse {
-                output: Some(output),
-                error: None,
-            }
-        }
-        "rpc_method3" => match server.rpc_method3(0, false) {
-            Ok(output) => RpcResponse {
-                output: Some(output),
-                error: None,
-            },
-            Err(_) => RpcResponse {
-                output: None,
-                error: Some("Failed".to_string()),
-            },
-        },
-        "rpc_method4" => {
-            let output = server.rpc_method4(request.input, client);
-            RpcResponse {
-                output: Some(output),
-                error: None,
-            }
-        }
-        _ => RpcResponse {
-            output: None,
-            error: Some("Unknown method".to_string()),
-        },
+    match request {
+        Packet::Message(id, _, msg) => server.message(id, Some(client.to_string()), msg),
     }
 }

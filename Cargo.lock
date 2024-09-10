@@ -157,8 +157,19 @@ name = "rpc_ipc"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "rpc_ipc_macros",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "rpc_ipc_macros"
+version = "0.1.0"
+dependencies = [
+ "bincode",
+ "proc-macro2",
+ "quote",
+ "syn",
 ]
 
 [[package]]

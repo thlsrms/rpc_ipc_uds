@@ -1,16 +1,5 @@
 use bincode::{Decode, Encode};
-
-#[derive(Encode, Decode, Debug)]
-pub struct RpcRequest {
-    pub method: String,
-    pub input: Input,
-}
-
-#[derive(Encode, Decode, Debug)]
-pub struct RpcResponse {
-    pub output: Option<Output>,
-    pub error: Option<String>,
-}
+pub use rpc_ipc_macros::{RpcClient, RpcService};
 
 pub trait Serializer {
     fn encode(&self) -> Result<Vec<u8>, bincode::error::EncodeError>
@@ -38,19 +27,8 @@ pub fn decode_data<D: Decode>(buf: &[u8]) -> Result<(D, usize), bincode::error::
     bincode::decode_from_slice(buf, bincode::config::standard())
 }
 
-#[derive(Encode, Decode, Debug)]
-pub struct Input {
-    pub data: Vec<u8>,
-}
-
-#[derive(Encode, Decode, Debug)]
-pub struct Output {
-    pub data: Vec<u8>,
-}
-
-pub trait Service {
-    fn rpc_method1(&mut self, input: Input) -> Output;
-    fn rpc_method2(&mut self, input: Input) -> Output;
-    fn rpc_method3(&mut self, forward_id: u64, forward_only: bool) -> Result<Output, ()>;
-    fn rpc_method4(&mut self, input: Input, client: uuid::Uuid) -> Output;
+#[derive(RpcService, RpcClient, Encode, Decode)]
+#[rpc_service(serialize = "bincode")]
+pub enum Packet {
+    Message(u32, Option<String>, String),
 }
