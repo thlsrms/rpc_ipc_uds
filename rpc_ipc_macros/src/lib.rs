@@ -92,6 +92,7 @@ pub fn rpc_client_derive(input: TokenStream) -> TokenStream {
         // Generate the Request / Response structs only once for compilation
         rpc_structs = generate_rpc_request_response(&name, serialization_option.as_deref());
     });
+    let request_type = quote::format_ident!("{}Request", name);
 
     let mut client_methods = vec![];
 
@@ -114,7 +115,10 @@ pub fn rpc_client_derive(input: TokenStream) -> TokenStream {
 
                 client_methods.push(quote! {
                     fn #method_name(&self, #(#args),*) -> Result<(), Box<dyn std::error::Error>> {
-                        self.send_request(#name::#variant_name( #(#args_for_call),* ))
+                        self.send_request(#request_type {
+                            id: self.generate_request_id(),
+                            data: #name::#variant_name( #(#args_for_call),* ),
+                        })
                     }
                 });
             }
@@ -132,14 +136,20 @@ pub fn rpc_client_derive(input: TokenStream) -> TokenStream {
 
                 client_methods.push(quote! {
                     fn #method_name(&self, #(#args),*) -> Result<(), Box<dyn std::error::Error>> {
-                        self.send_request(#name::#variant_name { #(#args_for_call),* } )
+                        self.send_request(#request_type {
+                            id: self.generate_request_id(),
+                            data: #name::#variant_name { #(#args_for_call),* },
+                        } )
                     }
                 });
             }
             Fields::Unit => {
                 client_methods.push(quote! {
                     fn #method_name(&self) -> Result<(), Box<dyn std::error::Error>> {
-                        self.send_request(#name::#variant_name)
+                        self.send_request(#request_type {
+                            id: self.generate_request_id(),
+                            data: #name::#variant_name,
+                        })
                     }
                 });
             }
@@ -150,8 +160,9 @@ pub fn rpc_client_derive(input: TokenStream) -> TokenStream {
         #rpc_structs
 
         pub trait #client_trait_name {
-            fn send_request(&self, request: #name) -> Result<(), Box<dyn std::error::Error>>;
+            fn send_request(&self, request: #request_type) -> Result<(), Box<dyn std::error::Error>>;
             fn poll_responses(&self);
+            fn generate_request_id(&self) -> u32;
 
             #(#client_methods)*
         }

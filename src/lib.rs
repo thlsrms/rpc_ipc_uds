@@ -30,5 +30,5 @@ pub fn decode_data<D: Decode>(buf: &[u8]) -> Result<(D, usize), bincode::error::
 #[derive(RpcService, RpcClient, Encode, Decode)]
 #[rpc_service(serialize = "bincode")]
 pub enum Packet {
-    Message(u32, Option<String>, String),
+    Message(Option<String>, String),
 }

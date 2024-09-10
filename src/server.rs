@@ -1,26 +1,22 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::mpsc::Sender;
 use tokio::sync::{mpsc, Mutex};
 
-use rpc_ipc::{decode_data, encode_data, Packet, PacketResponse, PacketService};
+use rpc_ipc::{decode_data, encode_data, Packet, PacketRequest, PacketResponse, PacketService};
 use uuid::Uuid;
 
 #[derive(Clone)]
-struct TestServer {
-    clients: Arc<Mutex<HashMap<Uuid, Sender<Vec<u8>>>>>,
-}
+struct TestServer;
 
 impl PacketService for TestServer {
-    fn message(&self, id: u32, client: Option<String>, message: String) -> PacketResponse {
+    fn message(&self, client: Option<String>, message: String) -> PacketResponse {
         println!("RPC message received '{message}'");
         let res = format!("client: {} | msg: {message}", client.unwrap());
         PacketResponse {
-            id,
-            data: Some(Packet::Message(id, None, res)),
+            id: 0,
+            data: Some(Packet::Message(None, res)),
             error: None,
         }
     }
@@ -34,9 +30,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         tokio::fs::remove_file(socket_addr).await?;
     }
     let listener = UnixListener::bind(socket_addr)?;
-    let server = Arc::new(Mutex::new(TestServer {
-        clients: Arc::new(Mutex::new(HashMap::new())),
-    }));
+    let server = Arc::new(Mutex::new(TestServer));
 
     loop {
         let (socket, _) = listener.accept().await?;
@@ -49,8 +43,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn handle_connection(socket: UnixStream, server: Arc<Mutex<TestServer>>) {
     let (mut reader, mut writer) = socket.into_split();
     let (tx, mut rx) = mpsc::channel::<Vec<u8>>(100);
-    let id = Uuid::new_v4();
-    server.lock().await.clients.lock().await.insert(id, tx);
+    let client_id = Uuid::new_v4();
 
     // Task to handle incoming client requests
     let server_handle = server.clone();
@@ -61,15 +54,10 @@ async fn handle_connection(socket: UnixStream, server: Arc<Mutex<TestServer>>) {
                 break;
             }
 
-            let (request, _) = decode_data(&buffer[..n]).unwrap();
-            let response = handle_request(server_handle.clone(), request, id).await;
-
-            // For single client response
-            // if tx.send(response.encode().unwrap()).await.is_err() {
-            //     break;
-            // }
-            for tx in server_handle.lock().await.clients.lock().await.values() {
-                let _ = tx.send(encode_data(&response).unwrap()).await;
+            println!("Read {n} bytes: {:?}", &buffer[..n]);
+            let response = handle_request(server_handle.clone(), &buffer[..n], client_id).await;
+            if tx.send(encode_data(&response).unwrap()).await.is_err() {
+                break;
             }
         }
     });
@@ -83,21 +71,27 @@ async fn handle_connection(socket: UnixStream, server: Arc<Mutex<TestServer>>) {
         }
     });
 
-    // Wait for both tasks to complete
     let _ = tokio::join!(reader_task, writer_task);
-
-    // Remove the client from the list when done
-    server.lock().await.clients.lock().await.remove(&id);
 }
 
 async fn handle_request(
     server: Arc<Mutex<TestServer>>,
-    request: Packet,
+    req_buf: &[u8],
     client: Uuid,
 ) -> PacketResponse {
     let server = server.lock().await;
+    let Ok((req, _)) = decode_data::<PacketRequest>(req_buf) else {
+        println!("Error decoding request?");
+        return PacketResponse {
+            id: 0,
+            data: None,
+            error: Some("Request invalid".into()),
+        };
+    };
 
-    match request {
-        Packet::Message(id, _, msg) => server.message(id, Some(client.to_string()), msg),
-    }
+    let mut response = match req.data {
+        Packet::Message(_, msg) => server.message(Some(client.to_string()), msg),
+    };
+    response.id = req.id;
+    response
 }
