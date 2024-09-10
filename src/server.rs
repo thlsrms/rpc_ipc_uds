@@ -121,6 +121,7 @@ async fn handle_request(
 ) -> RpcResponse {
     let mut server = server.lock().await;
 
+    // TODO: Typed Service functions + Custom Input / Output
     match request.method.as_str() {
         "rpc_method1" => {
             let output = server.rpc_method1(request.input);
