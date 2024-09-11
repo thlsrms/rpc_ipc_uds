@@ -4,21 +4,42 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{mpsc, Mutex};
 
-use rpc_ipc::{decode_data, encode_data, Packet, PacketRequest, PacketResponse, PacketService};
+use rpc_ipc::{
+    decode_data, encode_data, TestRPCError, TestRPCErrorKind, TestRPCRequest,
+    TestRPCRequestPayload, TestRPCResponse, TestRPCResponsePayload, TestRPCService,
+};
 use uuid::Uuid;
 
 #[derive(Clone)]
 struct TestServer;
 
-impl PacketService for TestServer {
-    fn message(&self, client: Option<String>, message: String) -> PacketResponse {
+impl TestRPCService for TestServer {
+    fn message(
+        &self,
+        client: Option<String>,
+        message: String,
+    ) -> Result<TestRPCResponsePayload, TestRPCError> {
         println!("RPC message received '{message}'");
         let res = format!("client: {} | msg: {message}", client.unwrap());
-        PacketResponse {
-            id: 0,
-            data: Some(Packet::Message(None, res)),
-            error: None,
+        Ok(TestRPCResponsePayload::Message(res))
+    }
+
+    fn sum(&self, arg0: f32, arg1: f32) -> Result<TestRPCResponsePayload, TestRPCError> {
+        println!("Sum {arg0} + {arg1}");
+        Ok(TestRPCResponsePayload::Sum(arg0 + arg1))
+    }
+
+    fn multiply(&self, arg0: f32, arg1: f32) -> Result<TestRPCResponsePayload, TestRPCError> {
+        println!("Multiply {arg0} * {arg1}");
+        Ok(TestRPCResponsePayload::Multiply(arg0 * arg1))
+    }
+
+    fn divide(&self, arg0: f32, arg1: f32) -> Result<TestRPCResponsePayload, TestRPCError> {
+        println!("Divide {arg0} / {arg1}");
+        if arg0 == 0.0 || arg1 == 0.0 {
+            return Err(TestRPCError::new(TestRPCErrorKind::InvalidArgument));
         }
+        Ok(TestRPCResponsePayload::Divide(arg0 / arg1))
     }
 }
 
@@ -78,20 +99,34 @@ async fn handle_request(
     server: Arc<Mutex<TestServer>>,
     req_buf: &[u8],
     client: Uuid,
-) -> PacketResponse {
+) -> TestRPCResponse {
     let server = server.lock().await;
-    let Ok((req, _)) = decode_data::<PacketRequest>(req_buf) else {
+    let Ok((req, _)) = decode_data::<TestRPCRequest>(req_buf) else {
         println!("Error decoding request?");
-        return PacketResponse {
+        return TestRPCResponse {
             id: 0,
-            data: None,
-            error: Some("Request invalid".into()),
+            payload: None,
+            error: Some(TestRPCError::new(TestRPCErrorKind::InvalidArgument)),
         };
     };
 
-    let mut response = match req.data {
-        Packet::Message(_, msg) => server.message(Some(client.to_string()), msg),
+    let response_payload = match req.payload {
+        TestRPCRequestPayload::Message(_, msg) => server.message(Some(client.to_string()), msg),
+        TestRPCRequestPayload::Sum(a, b) => server.sum(a, b),
+        TestRPCRequestPayload::Multiply(a, b) => server.multiply(a, b),
+        TestRPCRequestPayload::Divide(a, b) => server.divide(a, b),
     };
-    response.id = req.id;
+    let mut response = TestRPCResponse {
+        id: req.id,
+        ..Default::default()
+    };
+    match response_payload {
+        Ok(r) => {
+            response.payload = Some(r);
+        }
+        Err(e) => {
+            response.error = Some(e);
+        }
+    }
     response
 }

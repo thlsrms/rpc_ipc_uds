@@ -6,7 +6,10 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 
-use rpc_ipc::{decode_data, encode_data, Packet, PacketClient, PacketRequest, PacketResponse};
+use rpc_ipc::{
+    decode_data, encode_data, TestRPCClient, TestRPCRequest, TestRPCResponse,
+    TestRPCResponsePayload,
+};
 
 // Counter for generating new request IDs
 static NEXT_ID: AtomicU32 = AtomicU32::new(1);
@@ -20,13 +23,13 @@ fn release_id(id: u32) {
 }
 
 struct Client {
-    sender: Sender<PacketRequest>,
-    receiver: Arc<Mutex<Receiver<PacketResponse>>>,
+    sender: Sender<TestRPCRequest>,
+    receiver: Arc<Mutex<Receiver<TestRPCResponse>>>,
     _socket: Arc<Mutex<UnixStream>>,
 }
 
-impl PacketClient for Client {
-    fn send_request(&self, request: PacketRequest) -> Result<(), Box<dyn std::error::Error>> {
+impl TestRPCClient for Client {
+    fn send_request(&self, request: TestRPCRequest) -> Result<(), Box<dyn std::error::Error>> {
         self.sender.send(request)?;
         Ok(())
     }
@@ -34,10 +37,15 @@ impl PacketClient for Client {
     fn poll_responses(&self) {
         while let Ok(response) = self.receiver.lock().unwrap().recv() {
             // Do somethig with the response, call a function maybe...
-            if let Some(packet) = response.data {
+            if let Some(packet) = response.payload {
                 match packet {
-                    Packet::Message(_, msg) => println!("Received response: {msg:?}"),
+                    TestRPCResponsePayload::Message(msg) => println!("Message response: {msg:?}"),
+                    TestRPCResponsePayload::Sum(val) => println!("Sum response: {val:?}"),
+                    TestRPCResponsePayload::Multiply(val) => println!("Mult response: {val:?}"),
+                    TestRPCResponsePayload::Divide(val) => println!("Div response: {val:?}"),
                 };
+            } else if let Some(err) = response.error {
+                println!("Response Error {err}");
             }
             release_id(response.id);
         }
@@ -64,8 +72,8 @@ impl Client {
         socket.set_nonblocking(true).unwrap();
         let socket = Arc::new(Mutex::new(socket));
 
-        let (request_tx, request_rx) = mpsc::channel::<PacketRequest>();
-        let (response_tx, response_rx) = mpsc::channel::<PacketResponse>();
+        let (request_tx, request_rx) = mpsc::channel::<TestRPCRequest>();
+        let (response_tx, response_rx) = mpsc::channel::<TestRPCResponse>();
 
         // task to handle reading responses from the server
         {
@@ -156,13 +164,59 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         input = input[0..input.len() - 1].to_string();
 
         if !input.is_empty() {
-            client.message(None, input)?;
-        }
-    }
+            match input.split_once(" ") {
+                Some((command, args)) => match command {
+                    "exit" => break,
+                    "msg" => client.message(None, args.into())?,
+                    "sum" | "mult" | "div" => {
+                        let numbers: Vec<&str> = args.split_whitespace().take(2).collect();
+                        let [a, b] = &numbers[..] else {
+                            println!("Not enough numbers.");
+                            println!("ERR: {} numA numB", command);
+                            continue;
+                        };
+                        let a = match a.parse::<f32>() {
+                            Ok(n) => n,
+                            Err(e) => {
+                                println!("ERR: {} : invalid number A {e}", command);
+                                continue;
+                            }
+                        };
+                        let b = match b.parse::<f32>() {
+                            Ok(n) => n,
+                            Err(e) => {
+                                println!("ERR: {} : invalid number B {e}", command);
+                                continue;
+                            }
+                        };
 
-    unreachable!("The input loop above hogs the thread");
-    loop {
-        std::thread::sleep(std::time::Duration::from_secs(10));
+                        if command == "sum" {
+                            client.sum(a, b)?;
+                        } else if command == "mult" {
+                            client.multiply(a, b)?;
+                        } else {
+                            client.divide(a, b)?;
+                        }
+                    }
+                    _ => {
+                        println!("Invalid command");
+                        println!("Available commands are:");
+                        println!("sum 'numA' 'numB'");
+                        println!("mult 'numA' 'numB'");
+                        println!("div 'numA' 'numB'");
+                        println!("msg 'message'");
+                    }
+                },
+                _ => {
+                    println!("Invalid command");
+                    println!("Available commands are:");
+                    println!("sum 'numA' 'numB'");
+                    println!("mult 'numA' 'numB'");
+                    println!("div 'numA' 'numB'");
+                    println!("msg 'message'");
+                }
+            }
+        }
     }
     Ok(())
 }
