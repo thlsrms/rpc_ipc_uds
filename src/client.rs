@@ -37,15 +37,14 @@ impl TestRPCClient for Client {
     fn poll_responses(&self) {
         while let Ok(response) = self.receiver.lock().unwrap().recv() {
             // Do somethig with the response, call a function maybe...
-            if let Some(packet) = response.payload {
-                match packet {
+            match response.payload {
+                Ok(packet) => match packet {
                     TestRPCResponsePayload::Message(msg) => println!("Message response: {msg:?}"),
                     TestRPCResponsePayload::Sum(val) => println!("Sum response: {val:?}"),
                     TestRPCResponsePayload::Multiply(val) => println!("Mult response: {val:?}"),
                     TestRPCResponsePayload::Divide(val) => println!("Div response: {val:?}"),
-                };
-            } else if let Some(err) = response.error {
-                println!("Response Error {err}");
+                },
+                Err(err) => println!("Response Error {err}"),
             }
             release_id(response.id);
         }

@@ -228,14 +228,11 @@ fn generate_payload_enums<'a>(
     let mut res_variants = vec![];
     for variant in &request_variants {
         let variant_name = &variant.ident;
-        let response = if let Some(res) = responses_map.get(&variant_name.to_string()) {
-            res
+        let response_variant = if let Some(res) = responses_map.get(&variant_name.to_string()) {
+            response_variants.get(res).unwrap()
         } else {
-            response_variants.insert(variant_name.to_string(), variant);
-            &variant_name.to_string()
+            variant
         };
-
-        let response_variant = response_variants.get(response).unwrap();
 
         match &response_variant.fields {
             Fields::Unnamed(fields) => {
@@ -343,11 +340,9 @@ fn generate_rpc_request_response(
         }
 
         #serialization_derives
-        #[derive(Default)]
         pub struct #response_name {
             pub id: u32,
-            pub payload: Option<#response_enum_name>,
-            pub error: Option<#error_name>,
+            pub payload: Result<#response_enum_name, #error_name>,
         }
 
         #serialization_derives
@@ -377,22 +372,26 @@ fn generate_rpc_request_response(
 
         #serialization_derives
         pub struct #error_name {
-            error_kind: #error_kind_name,
+            error: #error_kind_name,
             description: String,
         }
 
         impl #error_name {
-            pub fn new(error_kind: #error_kind_name) -> Self {
+            pub fn new(error: #error_kind_name) -> Self {
                 Self {
-                    description: error_kind.to_string(),
-                    error_kind,
+                    description: error.to_string(),
+                    error,
                 }
+            }
+
+            fn set_description(&mut self, description: impl Into<String>) {
+                self.description = description.into();
             }
         }
 
         impl std::fmt::Display for #error_name {
             fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-                write!(f, "{}", self.error_kind)
+                write!(f, "{}", self.error)
             }
         }
 

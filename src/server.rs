@@ -105,8 +105,7 @@ async fn handle_request(
         println!("Error decoding request?");
         return TestRPCResponse {
             id: 0,
-            payload: None,
-            error: Some(TestRPCError::new(TestRPCErrorKind::InvalidArgument)),
+            payload: Err(TestRPCError::new(TestRPCErrorKind::InvalidArgument)),
         };
     };
 
@@ -116,17 +115,9 @@ async fn handle_request(
         TestRPCRequestPayload::Multiply(a, b) => server.multiply(a, b),
         TestRPCRequestPayload::Divide(a, b) => server.divide(a, b),
     };
-    let mut response = TestRPCResponse {
+
+    TestRPCResponse {
         id: req.id,
-        ..Default::default()
-    };
-    match response_payload {
-        Ok(r) => {
-            response.payload = Some(r);
-        }
-        Err(e) => {
-            response.error = Some(e);
-        }
+        payload: response_payload,
     }
-    response
 }
