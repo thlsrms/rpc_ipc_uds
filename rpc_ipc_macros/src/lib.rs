@@ -48,7 +48,7 @@ fn service_impl(ast: DeriveInput) -> Result<proc_macro2::TokenStream, syn::Error
                 });
 
                 service_methods.push(quote! {
-                    fn #method_name(&self, #(#args),*) -> Result<#response_enum_name, #error_name>;
+                    async fn #method_name(&self, #(#args),*) -> Result<#response_enum_name, #error_name>;
                 });
             }
             Fields::Named(fields) => {
@@ -59,12 +59,12 @@ fn service_impl(ast: DeriveInput) -> Result<proc_macro2::TokenStream, syn::Error
                 });
 
                 service_methods.push(quote! {
-                    fn #method_name(&self, #(#args),*) -> Result<#response_enum_name, #error_name>;
+                    async fn #method_name(&self, #(#args),*) -> Result<#response_enum_name, #error_name>;
                 });
             }
             Fields::Unit => {
                 service_methods.push(quote! {
-                    fn #method_name(&self) -> Result<#response_enum_name, #error_name>;
+                    async fn #method_name(&self) -> Result<#response_enum_name, #error_name>;
                 });
             }
         }

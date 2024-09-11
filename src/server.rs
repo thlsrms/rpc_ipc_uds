@@ -14,7 +14,7 @@ use uuid::Uuid;
 struct TestServer;
 
 impl TestRPCService for TestServer {
-    fn message(
+    async fn message(
         &self,
         client: Option<String>,
         message: String,
@@ -24,17 +24,17 @@ impl TestRPCService for TestServer {
         Ok(TestRPCResponsePayload::Message(res))
     }
 
-    fn sum(&self, arg0: f32, arg1: f32) -> Result<TestRPCResponsePayload, TestRPCError> {
+    async fn sum(&self, arg0: f32, arg1: f32) -> Result<TestRPCResponsePayload, TestRPCError> {
         println!("Sum {arg0} + {arg1}");
         Ok(TestRPCResponsePayload::Sum(arg0 + arg1))
     }
 
-    fn multiply(&self, arg0: f32, arg1: f32) -> Result<TestRPCResponsePayload, TestRPCError> {
+    async fn multiply(&self, arg0: f32, arg1: f32) -> Result<TestRPCResponsePayload, TestRPCError> {
         println!("Multiply {arg0} * {arg1}");
         Ok(TestRPCResponsePayload::Multiply(arg0 * arg1))
     }
 
-    fn divide(&self, arg0: f32, arg1: f32) -> Result<TestRPCResponsePayload, TestRPCError> {
+    async fn divide(&self, arg0: f32, arg1: f32) -> Result<TestRPCResponsePayload, TestRPCError> {
         println!("Divide {arg0} / {arg1}");
         if arg0 == 0.0 || arg1 == 0.0 {
             return Err(TestRPCError::new(TestRPCErrorKind::InvalidArgument));
@@ -109,15 +109,17 @@ async fn handle_request(
         };
     };
 
-    let response_payload = match req.payload {
-        TestRPCRequestPayload::Message(_, msg) => server.message(Some(client.to_string()), msg),
-        TestRPCRequestPayload::Sum(a, b) => server.sum(a, b),
-        TestRPCRequestPayload::Multiply(a, b) => server.multiply(a, b),
-        TestRPCRequestPayload::Divide(a, b) => server.divide(a, b),
+    let payload = match req.payload {
+        TestRPCRequestPayload::Message(_, msg) => {
+            server.message(Some(client.to_string()), msg).await
+        }
+        TestRPCRequestPayload::Sum(a, b) => server.sum(a, b).await,
+        TestRPCRequestPayload::Multiply(a, b) => server.multiply(a, b).await,
+        TestRPCRequestPayload::Divide(a, b) => server.divide(a, b).await,
     };
 
     TestRPCResponse {
         id: req.id,
-        payload: response_payload,
+        payload,
     }
 }
