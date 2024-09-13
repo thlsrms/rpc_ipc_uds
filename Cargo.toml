@@ -6,12 +6,16 @@ edition = "2021"
 [[bin]]
 name = "server"
 path = "src/server.rs"
+required-features = ["server"]
 
 [[bin]]
 name = "client"
 path = "src/client.rs"
+required-features = ["client"]
 
 [dependencies]
+bincode = { version = "2.0.0-rc.3" }
+rpc_ipc_macros = { path = "./rpc_ipc_macros/" }
 tokio = { version = "1", features = [
     "macros",
     "rt-multi-thread",
@@ -19,10 +23,14 @@ tokio = { version = "1", features = [
     "sync",
     "fs",
     "io-util",
-] }
-bincode = { version = "2.0.0-rc.3" }
-uuid = { version = "1.10", features = ["v4"] }
-rpc_ipc_macros = { path = "./rpc_ipc_macros/" }
+    "time",
+], optional = true }
+uuid = { version = "1.10", features = ["v4"], optional = true }
+crossbeam = { version = "0.8", optional = true }
+
+[features]
+server = ["dep:tokio", "dep:uuid"]
+client = ["dep:crossbeam"]
 
 [workspace]
 members = ["rpc_ipc_macros"]

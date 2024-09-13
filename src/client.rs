@@ -2,13 +2,14 @@ use std::collections::HashSet;
 use std::io::{ErrorKind, Read as _, Write as _};
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread;
 
+use crossbeam::channel::{Receiver, Sender};
+
 use rpc_ipc::{
-    decode_data, encode_data, TestRPCClient, TestRPCRequest, TestRPCResponse,
-    TestRPCResponsePayload,
+    decode_data, encode_data, Message, Origin, Payload, Req, Res, TestRPCClient, TestRPCError,
+    TestRPCErrorKind,
 };
 
 // Counter for generating new request IDs
@@ -22,32 +23,53 @@ fn release_id(id: u32) {
     RELEASED_IDS.lock().unwrap().insert(id);
 }
 
+#[derive(Clone, Debug)]
 struct Client {
-    sender: Sender<TestRPCRequest>,
-    receiver: Arc<Mutex<Receiver<TestRPCResponse>>>,
+    sender: Sender<Message>,
+    receiver: Receiver<Message>,
     _socket: Arc<Mutex<UnixStream>>,
 }
 
-impl TestRPCClient for Client {
-    fn send_request(&self, request: TestRPCRequest) -> Result<(), Box<dyn std::error::Error>> {
-        self.sender.send(request)?;
-        Ok(())
-    }
-
-    fn poll_responses(&self) {
-        while let Ok(response) = self.receiver.lock().unwrap().recv() {
+impl Client {
+    fn read_messages(&mut self) {
+        while let Ok(mut message) = self.receiver.recv() {
             // Do somethig with the response, call a function maybe...
-            match response.payload {
-                Ok(packet) => match packet {
-                    TestRPCResponsePayload::Message(msg) => println!("Message response: {msg:?}"),
-                    TestRPCResponsePayload::Sum(val) => println!("Sum response: {val:?}"),
-                    TestRPCResponsePayload::Multiply(val) => println!("Mult response: {val:?}"),
-                    TestRPCResponsePayload::Divide(val) => println!("Div response: {val:?}"),
-                },
-                Err(err) => println!("Response Error {err}"),
+            match message.payload {
+                Payload::Request(req) => {
+                    let response = if let Req::Ping(t) = req {
+                        self.handle_ping_request(t)
+                    } else {
+                        Res::Error(TestRPCError::new(TestRPCErrorKind::Unreachable))
+                    };
+                    message.payload = Payload::Response(response);
+                    if self.sender.send(message).is_err() {
+                        break;
+                    };
+                }
+                Payload::Response(res) => {
+                    if message.origin == Origin::Client {
+                        release_id(message.id);
+                    }
+                    match res {
+                        Res::Error(err) => println!("Response Error {err}"),
+                        Res::Message(msg) => println!("Message response: {msg:?}"),
+                        Res::Sum(val) => println!("Sum response: {val:?}"),
+                        Res::Multiply(val) => println!("Mult response: {val:?}"),
+                        Res::Divide(val) => println!("Div response: {val:?}"),
+                        _ => {
+                            println!("Unexpected response received")
+                        }
+                    }
+                }
             }
-            release_id(response.id);
         }
+    }
+}
+
+impl TestRPCClient for Client {
+    fn send_message(&self, packet: Message) -> Result<(), Box<dyn std::error::Error>> {
+        self.sender.send(packet)?;
+        Ok(())
     }
 
     fn generate_request_id(&self) -> u32 {
@@ -63,18 +85,30 @@ impl TestRPCClient for Client {
         // Otherwise, generate a new ID
         NEXT_ID.fetch_add(1, Ordering::SeqCst)
     }
+
+    fn handle_ping_request(&self, ts: u128) -> Res {
+        println!(
+            "Ping micros diff {}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_micros()
+                - ts
+        );
+        Res::Ping(ts)
+    }
 }
 
 impl Client {
-    fn new(socket_addr: &str) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
+    fn new(socket_addr: &str) -> Result<Self, Box<dyn std::error::Error>> {
         let socket = UnixStream::connect(socket_addr)?;
         socket.set_nonblocking(true).unwrap();
         let socket = Arc::new(Mutex::new(socket));
 
-        let (request_tx, request_rx) = mpsc::channel::<TestRPCRequest>();
-        let (response_tx, response_rx) = mpsc::channel::<TestRPCResponse>();
+        let (request_tx, request_rx) = crossbeam::channel::unbounded::<Message>();
+        let (response_tx, response_rx) = crossbeam::channel::unbounded::<Message>();
 
-        // task to handle reading responses from the server
+        // task to handle reading messages from the server
         {
             let socket_handler = Arc::clone(&socket);
             thread::spawn(move || {
@@ -87,14 +121,14 @@ impl Client {
                     };
                     match socket.read(&mut buffer) {
                         Ok(n) if n > 0 && n <= buffer.len() => {
-                            println!("Read {n} bytes");
+                            println!("Read {n} bytes: {:?}", &buffer[..n]);
                             drop(socket); // Release the lock before processing the message
-                            if let Ok((response, _)) = decode_data(&buffer[..n]) {
-                                if response_tx.send(response).is_err() {
-                                    println!("Could no send a response over the channel");
+                            if let Ok((message, _)) = decode_data(&buffer[..n]) {
+                                if response_tx.send(message).is_err() {
+                                    println!("Could not send message over the channel");
                                 };
                             } else {
-                                println!("Response decoding failed");
+                                println!("Message decoding failed");
                             }
                         }
                         Ok(_) => {
@@ -103,7 +137,7 @@ impl Client {
                         }
                         Err(e) if e.kind() == ErrorKind::WouldBlock => {
                             // Handle timeout
-                            std::thread::sleep(std::time::Duration::from_micros(333));
+                            std::thread::sleep(std::time::Duration::from_micros(50));
                             continue; // Continue the loop after timeout
                         }
                         Err(e) => {
@@ -115,7 +149,7 @@ impl Client {
             });
         }
 
-        // task to handle sending requests to the server
+        // task to handle sending messages to the server
         {
             let socket_handler = Arc::clone(&socket);
             thread::spawn(move || {
@@ -133,11 +167,11 @@ impl Client {
             });
         }
 
-        Ok(Arc::new(Self {
+        Ok(Self {
             sender: request_tx,
-            receiver: Arc::new(Mutex::new(response_rx)),
+            receiver: response_rx,
             _socket: socket,
-        }))
+        })
     }
 }
 
@@ -145,12 +179,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let socket_addr = "/tmp/rpc.sock";
     let client = Client::new(socket_addr)?;
 
-    // Continuously poll for responses
+    // Read incoming messages
     {
-        let client_handle = Arc::clone(&client);
+        let mut client_handle = client.clone();
         thread::spawn(move || loop {
-            client_handle.poll_responses();
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            client_handle.read_messages();
+            std::thread::sleep(std::time::Duration::from_micros(50));
         });
     }
 
@@ -199,7 +233,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     _ => {
                         println!("Invalid command");
-                        println!("Available commands are:");
+                        println!("\nAvailable commands are:");
                         println!("sum 'numA' 'numB'");
                         println!("mult 'numA' 'numB'");
                         println!("div 'numA' 'numB'");
@@ -208,7 +242,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 _ => {
                     println!("Invalid command");
-                    println!("Available commands are:");
+                    println!("\nAvailable commands are:");
                     println!("sum 'numA' 'numB'");
                     println!("mult 'numA' 'numB'");
                     println!("div 'numA' 'numB'");
