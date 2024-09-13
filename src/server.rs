@@ -58,7 +58,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .await;
 
                     println!("Connection cleanup x {{ {client_id} }}");
-                    server_m.lock().await.clients.remove(&client_id);
+                    let mut s = server_m.lock().await;
+                    s.clients.remove(&client_id);
+                    s.client_abort_channels.remove(&client_id);
                 });
                 server_lock
                     .client_abort_channels
@@ -95,7 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 None => match input.as_ref() {
                     "list" => {
-                        for key in server.lock().await.clients.keys() {
+                        for key in server.lock().await.client_abort_channels.keys() {
                             println!("Client : {key}");
                         }
                     }
@@ -122,7 +124,6 @@ impl ClientConnection {
                 id,
                 sender: client_bound_tx,
                 receiver: server_bound_rx,
-                // tasks_hadle: vec![],
             })),
             (server_bound_tx, client_bound_rx),
         )
@@ -160,7 +161,7 @@ impl ClientConnection {
         let outbound_sende_2 = outbound_sender.clone();
         tokio::select! {
             _ = abort_rx.recv() => {println!("Connection Closed")},
-            _read_messages = async move {
+            _socket_reader = async move {
                 let mut buffer = vec![0u8; 1024];
                 while let Ok(n) = reader.read(&mut buffer).await {
                     if n == 0 {
@@ -231,8 +232,7 @@ impl ClientConnection {
             } => {},
 
 
-            _socket_reader = async move {
-                // tokio::time::sleep(tokio::time::Duration::from_micros(1)).await;
+            _read_messages = async move {
                 this.lock().await.read_messages().await;
             } => {},
         }

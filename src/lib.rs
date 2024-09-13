@@ -16,7 +16,7 @@ pub enum TestRPC {
     Sum(f32, f32),
     Multiply(f32, f32),
     Divide(f32, f32),
-    // client attribute marks a variant as rpc that the request should handled by the client
+    // client attribute marks the rpc request to be handled by the client
     #[client]
     Ping(u128),
     // response attribute declares its variant type as response type for the listed Variant names
